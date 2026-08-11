@@ -58,7 +58,7 @@ export default function PinList({
           <div style={{ minWidth: 0 }}>
             <p
               className="mono"
-              style={{ fontSize: 13, fontWeight: 500, marginBottom: 2 }}
+              style={{ fontSize: 13, fontWeight: 500, marginBottom: 2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis"   }}
             >
               {t.nama_aset}
             </p>

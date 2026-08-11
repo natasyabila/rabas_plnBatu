@@ -12,6 +12,7 @@ interface AsetState {
   sudahInit: boolean;
   pendingCount: number;
   isOnline: boolean;
+  dariCache: boolean;
   init: () => Promise<void>;
   tandaiStatus: (kode_unik: string, status: StatusRabas) => Promise<void>;
   syncPending: () => Promise<void>;
@@ -22,6 +23,35 @@ function slugify(nama: string) {
   return nama.toLowerCase().replace(/\s+/g, "-");
 }
 
+const CACHE_KEY = "rabas_titik_cache";
+const CACHE_TIME_KEY = "rabas_titik_cache_time";
+
+function simpanCache(data: TitikAset[]) {
+  if (typeof window === "undefined") return;
+  try {
+    localStorage.setItem(CACHE_KEY, JSON.stringify(data));
+    localStorage.setItem(CACHE_TIME_KEY, String(Date.now()));
+  } catch {
+    // Kalau localStorage penuh/gagal, abaikan saja — bukan fitur kritikal
+  }
+}
+
+function ambilCache(): TitikAset[] | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = localStorage.getItem(CACHE_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+function waktuCache(): number | null {
+  if (typeof window === "undefined") return null;
+  const raw = localStorage.getItem(CACHE_TIME_KEY);
+  return raw ? Number(raw) : null;
+}
+
 export const useAsetStore = create<AsetState>((set, get) => ({
   titik: [],
   loading: true,
@@ -29,6 +59,7 @@ export const useAsetStore = create<AsetState>((set, get) => ({
   sudahInit: false,
   pendingCount: typeof window !== "undefined" ? getQueue().length : 0,
   isOnline: typeof window !== "undefined" ? navigator.onLine : true,
+  dariCache: false,
 
   init: async () => {
     if (get().sudahInit) return;
@@ -66,12 +97,43 @@ export const useAsetStore = create<AsetState>((set, get) => ({
         return pending ? { ...t, status: pending.status } : t;
       });
 
-      set({ titik: dataDenganPending, loading: false, pendingCount: queue.length });
+      set({
+        titik: dataDenganPending,
+        loading: false,
+        pendingCount: queue.length,
+        dariCache: false,
+      });
+
+      // Fetch berhasil — simpan salinan terbaru untuk fallback offline nanti.
+      simpanCache(dataDenganPending);
     } catch (err) {
-      const msg = err instanceof Error ? err.message : "Gagal memuat data";
-      // Kalau sudah ada data lama tersimpan di state, jangan tampilkan error
-      // (kemungkinan cuma sinyal lagi lemah, bukan gagal total)
-      set({ loading: false, error: get().titik.length === 0 ? msg : null });
+      // Fetch gagal (kemungkinan besar karena offline) — coba pakai data
+      // terakhir yang tersimpan di HP, daripada tampilkan kosong.
+      const cache = ambilCache();
+
+      if (cache && cache.length > 0) {
+        const queue = getQueue();
+        const dataDenganPending = cache.map((t) => {
+          const pending = queue.find((q) => q.kode_unik === t.kode_unik);
+          return pending ? { ...t, status: pending.status } : t;
+        });
+
+        const waktu = waktuCache();
+        const info = waktu
+          ? `Menampilkan data tersimpan dari ${new Date(waktu).toLocaleString("id-ID")} (offline).`
+          : "Menampilkan data tersimpan (offline).";
+
+        set({
+          titik: dataDenganPending,
+          loading: false,
+          error: info,
+          pendingCount: queue.length,
+          dariCache: true,
+        });
+      } else {
+        const msg = err instanceof Error ? err.message : "Gagal memuat data";
+        set({ loading: false, error: msg, dariCache: false });
+      }
     }
 
     supabase
@@ -81,11 +143,13 @@ export const useAsetStore = create<AsetState>((set, get) => ({
         { event: "UPDATE", schema: "public", table: "titik_aset" },
         (payload) => {
           const baru = payload.new as TitikAset;
-          set((state) => ({
-            titik: state.titik.map((t) =>
+          set((state) => {
+            const titikBaru = state.titik.map((t) =>
               t.kode_unik === baru.kode_unik ? { ...t, ...baru } : t,
-            ),
-          }));
+            );
+            simpanCache(titikBaru);
+            return { titik: titikBaru };
+          });
         },
       )
       .subscribe();
@@ -107,12 +171,12 @@ export const useAsetStore = create<AsetState>((set, get) => ({
 
   tandaiStatus: async (kode_unik, status) => {
     const sebelumnya = get().titik;
+    const titikBaru = sebelumnya.map((t) =>
+      t.kode_unik === kode_unik ? { ...t, status } : t,
+    );
 
-    set({
-      titik: sebelumnya.map((t) =>
-        t.kode_unik === kode_unik ? { ...t, status } : t,
-      ),
-    });
+    set({ titik: titikBaru });
+    simpanCache(titikBaru);
 
     const online = typeof window !== "undefined" ? navigator.onLine : true;
 
@@ -128,8 +192,6 @@ export const useAsetStore = create<AsetState>((set, get) => ({
     });
 
     if (error) {
-      // Gagal walau kelihatannya online (sinyal lemah dll) — masukkan ke
-      // antrian juga daripada hilang, jangan rollback tampilan.
       const queue = addToQueue({ kode_unik, status });
       set({ pendingCount: queue.length });
     }
@@ -150,6 +212,11 @@ export const useAsetStore = create<AsetState>((set, get) => ({
         set({ pendingCount: sisa.length });
       }
     }
+
+    // Setelah sync selesai, ambil ulang data segar dari server dan perbarui
+    // cache + hapus flag "dariCache" karena sekarang datanya sudah live lagi.
+    set({ sudahInit: false });
+    get().init();
   },
 
   ringkasanSemuaPenyulang: () => {

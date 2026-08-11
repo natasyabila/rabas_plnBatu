@@ -6,6 +6,8 @@ import SyncStatus from "@/components/SyncStatus";
 export const metadata: Metadata = {
   title: "Monitoring Rabas Jaringan — ULP Batu",
   description: "Dashboard pemantauan titik rabas pohon per penyulang",
+  manifest: "/manifest.json",
+  themeColor: "#0a0e1a",
 };
 
 export default function RootLayout({
